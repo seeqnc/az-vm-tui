@@ -1,0 +1,106 @@
+# Starship prompt configuration
+# https://starship.rs/config/
+
+format = """
+$directory\
+$git_branch\
+$git_state\
+$git_status\
+$git_metrics\
+$python\
+$nodejs\
+$cmd_duration\
+$status\
+$fill\
+$kubernetes\
+
+$line_break\
+
+$username\
+$time\
+${env_var.DEVCONTAINER}\
+$character"""
+
+[username]
+style_user = 'yellow bold'
+style_root = 'red bold'
+format = '[$user]($style)'
+disabled = false
+show_always = true
+
+[fill]
+symbol = " "
+
+[hostname]
+ssh_only = true
+format = '[$ssh_symbol](bold blue) on [$hostname](bold red) '
+trim_at = '.companyname.com'
+disabled = false
+
+[directory]
+truncation_length = 3
+truncate_to_repo = true
+
+[git_branch]
+symbol = ""
+format = '[[\[$symbol $branch ](fg:white)]($style)'
+truncation_length = 24
+
+[git_status]
+format = '[[($all_status $ahead_behind )](fg:yellow)]($style)'
+
+[git_state]
+format = '[[ $state( $progress_current/$progress_total) ]()]($style)'
+
+[git_metrics]
+disabled = false
+added_style = "fg:yellow"
+deleted_style = "fg:red"
+format = '[[+$added]($added_style)/[-$deleted]($deleted_style)\] ](fg:white)'
+
+[kubernetes]
+symbol = "󱃾"
+disabled = false
+format = '[$symbol $context \($namespace\)]($style)'
+contexts = [
+  { context_pattern = ".*dev.*", style = "green"},
+  { context_pattern = ".*test.*", style = "yellow" },
+  { context_pattern = ".*prod.*", style = "red" },
+]
+
+[python]
+symbol = ""
+format = '\[[${symbol} ${pyenv_prefix}(${version})(\($virtualenv\))]($style)\] '
+detect_extensions = ["py"]
+detect_files = ["pyproject.toml", "requirements.txt", "setup.py", "Pipfile"]
+
+[nodejs]
+format = '\[[$symbol($version)]($style)\] '
+detect_extensions = ["js", "ts"]
+detect_files = ["package.json"]
+
+[deno]
+format = '\[[$symbol($version)]($style)\] '
+
+[cmd_duration]
+min_time = 2000
+style = "bg:color_bg3"
+format = '[[  $duration ](fg:color_fg0 bg:color_aqua)]($style)'
+
+[status]
+disabled = false
+style = "bg:color_bg4"
+format = '[[ ✖ $status ](fg:red)]($style)'
+map_symbol = true
+recognize_signal_code = true
+
+[time]
+disabled = false
+format = ' [$time]($style) '
+time_format = "%H:%M"
+
+[env_var.DEVCONTAINER]
+variable = "DEVCONTAINER"
+format = '[$symbol devc ]($style)'
+symbol = '󰡨'
+style = 'bold purple'

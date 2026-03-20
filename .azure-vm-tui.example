@@ -1,0 +1,16 @@
+# Azure VM TUI configuration
+# Place as .azure-vm-tui in your working directory or home directory
+
+[azure]
+# subscription_id = ""      # empty = use az default subscription
+# resource_group  = ""      # empty = list VMs across all resource groups
+
+[ui]
+# show_stats       = false  # show system stats panel for selected VM
+# refresh_interval = 5      # seconds between stat refreshes (min: 5)
+# fuzzy_threshold  = 5      # use fzf when VM count exceeds this
+
+[ssh]
+# user    = "azureuser"
+# key     = "~/.ssh/id_rsa"
+# timeout = 8               # seconds before stat fetch times out
