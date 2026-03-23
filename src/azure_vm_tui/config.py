@@ -4,6 +4,7 @@ Searches for .azure-vm-tui config file in $PWD then ~/.azure-vm-tui.
 All settings have sensible defaults and missing keys are filled in automatically.
 """
 
+import stat
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -95,6 +96,30 @@ def _parse_ui(raw: dict) -> UIConfig:
         refresh_interval=max(REFRESH_INTERVAL_MIN, refresh_interval),
         fuzzy_threshold=raw.get("fuzzy_threshold", defaults.fuzzy_threshold),
     )
+
+
+def validate_ssh_key_path(key: str) -> None:
+    """Validate that an SSH key path is safe to use.
+
+    Checks that the resolved path exists, is a regular file (not a symlink to
+    something unexpected), and has permissions that don't expose the key to
+    other users.
+
+    Args:
+        key: Path string, may contain ~ for home directory expansion.
+
+    Raises:
+        ValueError: If the key path is invalid or has unsafe permissions.
+    """
+    resolved = Path(key).expanduser().resolve()
+    if not resolved.is_file():
+        raise ValueError(f"SSH key not found: {resolved}")
+    file_mode = resolved.stat().st_mode
+    if file_mode & (stat.S_IRWXG | stat.S_IRWXO):
+        raise ValueError(
+            f"SSH key {resolved} has unsafe permissions "
+            f"(mode {stat.filemode(file_mode)}); run: chmod 600 {resolved}"
+        )
 
 
 def _parse_ssh(raw: dict) -> SSHConfig:

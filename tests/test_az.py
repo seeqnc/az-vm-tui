@@ -108,7 +108,7 @@ def test_check_az_cli_not_found() -> None:
     """AzError is raised when az is not on PATH."""
     with patch("azure_vm_tui.az.shutil.which", return_value=None), pytest.raises(AzError) as exc_info:
         check_az_cli()
-    assert "https://aka.ms/installazurecli" in str(exc_info.value)
+    assert "https://aka.ms/installazurecli" in exc_info.value.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +126,7 @@ def test_check_login_failure() -> None:
     """AzError is raised with an az login hint when not authenticated."""
     with patch("subprocess.run", return_value=_fail("Please run 'az login'")), pytest.raises(AzError) as exc_info:
         check_login()
-    assert "az login" in str(exc_info.value)
+    assert "az login" in exc_info.value.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -296,16 +296,17 @@ def test_az_error_on_failure() -> None:
     err = exc_info.value
     assert err.exit_code == 2
     assert "ResourceNotFound" in err.stderr
-    assert "ResourceNotFound" in str(err)
+    assert "Azure CLI error" in str(err)
 
 
 def test_az_error_attributes() -> None:
-    """AzError stores command, stderr, and exit_code attributes."""
+    """AzError stores command, stderr, exit_code, and display_message attributes."""
     err = AzError(command="az vm list --output json", stderr="some error", exit_code=3)
     assert err.command == "az vm list --output json"
     assert err.stderr == "some error"
     assert err.exit_code == 3
-    assert "exit 3" in str(err)
+    assert "exit 3" in err.display_message
+    assert "some error" not in str(err)  # stderr must not leak into display
 
 
 # ---------------------------------------------------------------------------

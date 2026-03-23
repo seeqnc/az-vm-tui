@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 
 import paramiko
 
@@ -200,10 +201,13 @@ def collect_stats(host: str, user: str, key_path: str, timeout: int) -> VMStats:
                     another SSH-level error occurs.
     """
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    known_hosts = Path("~/.ssh/known_hosts").expanduser()
+    if known_hosts.is_file():
+        client.load_host_keys(str(known_hosts))
+    client.set_missing_host_key_policy(paramiko.WarningPolicy())
     try:
         client.connect(hostname=host, username=user, key_filename=key_path, timeout=timeout)
-        _, stdout, _ = client.exec_command(_build_command())
+        _, stdout, _ = client.exec_command(_build_command(), timeout=timeout)
         output = stdout.read().decode()
         sections = output.split("---SEP---")
 
@@ -224,8 +228,8 @@ def collect_stats(host: str, user: str, key_path: str, timeout: int) -> VMStats:
         )
     except paramiko.AuthenticationException as exc:
         raise StatsError("Permission denied") from exc
-    except TimeoutError:
-        raise StatsError("SSH timeout") from None
+    except (TimeoutError, OSError) as exc:
+        raise StatsError("SSH timeout") from exc
     except paramiko.SSHException as exc:
         raise StatsError(str(exc)) from exc
     finally:

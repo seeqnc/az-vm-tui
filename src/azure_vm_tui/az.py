@@ -7,15 +7,25 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 
+_AZ_TIMEOUT_SECONDS = 60
+
 
 class AzError(Exception):
-    """Raised when an az CLI command fails."""
+    """Raised when an az CLI command fails.
+
+    Attributes:
+        command: The full CLI command string.
+        stderr: Raw stderr output (may contain sensitive Azure context — log only).
+        exit_code: Process exit code.
+        display_message: Sanitized message safe for display in the UI.
+    """
 
     def __init__(self, command: str, stderr: str, exit_code: int) -> None:
         self.command = command
         self.stderr = stderr
         self.exit_code = exit_code
-        super().__init__(f"az command failed (exit {exit_code}): {stderr.strip()}")
+        self.display_message = f"Azure CLI error (exit {exit_code})"
+        super().__init__(self.display_message)
 
 
 @dataclass(frozen=True)
@@ -47,7 +57,14 @@ def _run_az(args: list[str]) -> str:
         AzError: If the process exits with a non-zero status.
     """
     cmd = ["az", *args, "--output", "json"]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=_AZ_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as exc:
+        raise AzError(
+            command=" ".join(cmd),
+            stderr=f"Command timed out after {_AZ_TIMEOUT_SECONDS}s",
+            exit_code=-1,
+        ) from exc
     if result.returncode != 0:
         raise AzError(command=" ".join(cmd), stderr=result.stderr, exit_code=result.returncode)
     return result.stdout

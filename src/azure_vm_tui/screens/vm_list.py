@@ -121,11 +121,10 @@ class VMListScreen(Screen):
                 resource_group=self.config.azure.resource_group,
                 subscription_id=self.config.azure.subscription_id,
             )
-            self._vms = vms
-            self.app.call_from_thread(self._populate_table)
+            self.app.call_from_thread(self._populate_table, vms)
         except AzError as exc:
-            logger.error("Failed to list VMs: %s", exc)
-            self.app.call_from_thread(self._show_error, f"Failed to list VMs: {exc}")
+            logger.error("Failed to list VMs: %s", exc.stderr)
+            self.app.call_from_thread(self._show_error, f"Failed to list VMs: {exc.display_message}")
         finally:
             self.app.call_from_thread(self._set_loading, False)
 
@@ -138,8 +137,13 @@ class VMListScreen(Screen):
         table = self.query_one("#vm-table", DataTable)
         table.loading = value
 
-    def _populate_table(self) -> None:
-        """Fill the DataTable with VM data (must run on main thread)."""
+    def _populate_table(self, vms: list[VMInfo]) -> None:
+        """Fill the DataTable with VM data (must run on main thread).
+
+        Args:
+            vms: List of VMs to display.
+        """
+        self._vms = vms
         table = self.query_one("#vm-table", DataTable)
         table.clear()
         for vm in self._vms:
@@ -184,6 +188,9 @@ class VMListScreen(Screen):
         vm = self._get_selected_vm()
         if vm is None:
             return
+        if vm.power_state in ("running", "starting"):
+            self.notify(f"{vm.name} is already {vm.power_state}", severity="warning")
+            return
         self._do_start_vm(vm)
 
     @work(thread=True)
@@ -193,18 +200,21 @@ class VMListScreen(Screen):
         Args:
             vm: The VM to start.
         """
+        self.app.call_from_thread(self.notify, f"Starting {vm.name}...")
         try:
             az.start_vm(vm.name, vm.resource_group)
-            self.app.call_from_thread(self.notify, f"Starting {vm.name}...")
             self.app.call_from_thread(self._load_vms)
         except AzError as exc:
-            logger.error("Failed to start VM %s: %s", vm.name, exc)
-            self.app.call_from_thread(self._show_error, f"Failed to start {vm.name}: {exc}")
+            logger.error("Failed to start VM %s: %s", vm.name, exc.stderr)
+            self.app.call_from_thread(self._show_error, f"Failed to start {vm.name}: {exc.display_message}")
 
     def action_stop_vm(self) -> None:
         """Stop the selected VM after confirmation."""
         vm = self._get_selected_vm()
         if vm is None:
+            return
+        if vm.power_state in ("deallocated", "stopped", "stopping", "deallocating"):
+            self.notify(f"{vm.name} is already {vm.power_state}", severity="warning")
             return
         self._confirm_stop(vm)
 
@@ -227,13 +237,13 @@ class VMListScreen(Screen):
         Args:
             vm: The VM to stop.
         """
+        self.app.call_from_thread(self.notify, f"Stopping {vm.name}...")
         try:
             az.stop_vm(vm.name, vm.resource_group)
-            self.app.call_from_thread(self.notify, f"Stopping {vm.name}...")
             self.app.call_from_thread(self._load_vms)
         except AzError as exc:
-            logger.error("Failed to stop VM %s: %s", vm.name, exc)
-            self.app.call_from_thread(self._show_error, f"Failed to stop {vm.name}: {exc}")
+            logger.error("Failed to stop VM %s: %s", vm.name, exc.stderr)
+            self.app.call_from_thread(self._show_error, f"Failed to stop {vm.name}: {exc.display_message}")
 
     def action_show_info(self) -> None:
         """Open detail screen for the selected VM."""
@@ -279,8 +289,8 @@ class VMListScreen(Screen):
             ssh_key = self.config.ssh.key
             self.app.call_from_thread(self.app.exit, {"host": ip, "user": ssh_user, "key": ssh_key})
         except AzError as exc:
-            logger.error("Failed to get IP for %s: %s", vm.name, exc)
-            self.app.call_from_thread(self._show_error, f"Failed to get IP for {vm.name}: {exc}")
+            logger.error("Failed to get IP for %s: %s", vm.name, exc.stderr)
+            self.app.call_from_thread(self._show_error, f"Failed to get IP for {vm.name}: {exc.display_message}")
 
     def action_refresh(self) -> None:
         """Force refresh the VM list."""

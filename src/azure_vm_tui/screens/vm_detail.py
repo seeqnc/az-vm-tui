@@ -16,7 +16,7 @@ from textual.widgets import Footer, Header, Static
 
 from azure_vm_tui import az
 from azure_vm_tui.az import AzError, VMInfo
-from azure_vm_tui.config import AppConfig
+from azure_vm_tui.config import AppConfig, validate_ssh_key_path
 from azure_vm_tui.stats import StatsError, VMStats, collect_stats
 
 logger = logging.getLogger("azure_vm_tui")
@@ -94,7 +94,7 @@ class VMDetailScreen(Screen):
             ip = az.get_vm_ip(self._vm.name, self._vm.resource_group)
             ip_display = ip or "none"
         except AzError as exc:
-            logger.error("Failed to get IP for %s: %s", self._vm.name, exc)
+            logger.error("Failed to get IP for %s: %s", self._vm.name, exc.stderr)
             ip_display = "error"
         self.app.call_from_thread(self._update_info, ip_display)
 
@@ -124,6 +124,7 @@ class VMDetailScreen(Screen):
             if ip is None:
                 self.app.call_from_thread(self._update_stats_error, "No public IP — cannot collect stats")
                 return
+            validate_ssh_key_path(self._config.ssh.key)
             key_path = str(Path(self._config.ssh.key).expanduser())
             vm_stats = collect_stats(
                 host=ip,
@@ -132,10 +133,13 @@ class VMDetailScreen(Screen):
                 timeout=self._config.ssh.timeout,
             )
             self.app.call_from_thread(self._update_stats_display, vm_stats)
+        except ValueError as exc:
+            self.app.call_from_thread(self._update_stats_error, str(exc))
         except StatsError as exc:
             self.app.call_from_thread(self._update_stats_error, exc.reason)
         except AzError as exc:
-            self.app.call_from_thread(self._update_stats_error, f"Azure error: {exc}")
+            logger.error("Azure error fetching stats for %s: %s", self._vm.name, exc.stderr)
+            self.app.call_from_thread(self._update_stats_error, f"Azure error: {exc.display_message}")
 
     def _update_stats_display(self, stats: VMStats) -> None:
         """Update the stats panel with fresh data (main thread).
