@@ -16,7 +16,7 @@ from azure_vm_tui.config import (
 
 def write_toml(tmp_path: Path, content: str) -> Path:
     """Write a TOML config file to tmp_path and return its path."""
-    config_file = tmp_path / ".azure-vm-tui"
+    config_file = tmp_path / ".az-vm-tui"
     config_file.write_text(content)
     return config_file
 
@@ -163,8 +163,8 @@ class TestConfigPathResolution:
         cwd_dir.mkdir()
         home_dir.mkdir()
 
-        (cwd_dir / ".azure-vm-tui").write_text('[azure]\nsubscription_id = "from-cwd"\n')
-        (home_dir / ".azure-vm-tui").write_text('[azure]\nsubscription_id = "from-home"\n')
+        (cwd_dir / ".az-vm-tui").write_text('[azure]\nsubscription_id = "from-cwd"\n')
+        (home_dir / ".az-vm-tui").write_text('[azure]\nsubscription_id = "from-home"\n')
 
         with (
             patch.object(Path, "cwd", return_value=cwd_dir),
@@ -181,7 +181,7 @@ class TestConfigPathResolution:
         cwd_dir.mkdir()
         home_dir.mkdir()
 
-        (home_dir / ".azure-vm-tui").write_text('[azure]\nsubscription_id = "from-home"\n')
+        (home_dir / ".az-vm-tui").write_text('[azure]\nsubscription_id = "from-home"\n')
 
         with (
             patch.object(Path, "cwd", return_value=cwd_dir),

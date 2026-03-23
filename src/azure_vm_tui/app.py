@@ -11,7 +11,7 @@ from textual.app import App
 from azure_vm_tui.config import AppConfig
 from azure_vm_tui.screens.vm_list import VMListScreen
 
-LOG_FILE = Path.home() / ".azure-vm-tui.log"
+LOG_FILE = Path.home() / ".az-vm-tui.log"
 
 logger = logging.getLogger("azure_vm_tui")
 
@@ -19,7 +19,7 @@ logger = logging.getLogger("azure_vm_tui")
 class AzureVMApp(App):
     """Main application for Azure VM TUI."""
 
-    TITLE = "azure-vm-tui"
+    TITLE = "az-vm-tui"
 
     CSS = """
     Screen {

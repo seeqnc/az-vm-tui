@@ -33,7 +33,7 @@ Homepage = "https://github.com/yourorg/azure-vm-tui"
 Issues = "https://github.com/yourorg/azure-vm-tui/issues"
 
 [project.scripts]
-azure-vm-tui = "azure_vm_tui.main:main"
+az-vm-tui = "azure_vm_tui.main:main"
 
 [build-system]
 requires = ["hatchling"]

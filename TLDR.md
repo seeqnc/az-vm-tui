@@ -1,4 +1,4 @@
-# azure-vm-tui
+# az-vm-tui
 
 Terminal UI for managing Azure VMs. List, start, stop, inspect — with optional live system stats over SSH.
 
@@ -7,7 +7,7 @@ Terminal UI for managing Azure VMs. List, start, stop, inspect — with optional
 ```bash
 az login
 uv venv && uv pip install -e ".[dev]"
-uv run azure-vm-tui
+uv run az-vm-tui
 ```
 
 ## Keys
@@ -24,7 +24,7 @@ uv run azure-vm-tui
 
 ## Config
 
-Optional. Place as `~/.azure-vm-tui` or `./.azure-vm-tui` (TOML):
+Optional. Place as `~/.az-vm-tui` or `./.az-vm-tui` (TOML):
 
 ```toml
 [azure]

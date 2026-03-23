@@ -1,1 +1,1 @@
-"""TUI screens for azure-vm-tui."""
+"""TUI screens for az-vm-tui."""

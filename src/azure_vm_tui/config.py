@@ -1,6 +1,6 @@
-"""Configuration loading for azure-vm-tui.
+"""Configuration loading for az-vm-tui.
 
-Searches for .azure-vm-tui config file in $PWD then ~/.azure-vm-tui.
+Searches for .az-vm-tui config file in $PWD then ~/.az-vm-tui.
 All settings have sensible defaults and missing keys are filled in automatically.
 """
 
@@ -9,7 +9,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-CONFIG_FILENAME = ".azure-vm-tui"
+CONFIG_FILENAME = ".az-vm-tui"
 REFRESH_INTERVAL_MIN = 5
 
 
@@ -158,8 +158,8 @@ def _parse_toml(data: dict) -> AppConfig:
 def load_config(path: str | None = None) -> AppConfig:
     """Load application configuration from a TOML file.
 
-    Searches in order: explicit path (if given), $PWD/.azure-vm-tui,
-    ~/.azure-vm-tui. The first file found is used. Missing keys receive
+    Searches in order: explicit path (if given), $PWD/.az-vm-tui,
+    ~/.az-vm-tui. The first file found is used. Missing keys receive
     defaults. If no config file is found, returns all defaults.
 
     Args:

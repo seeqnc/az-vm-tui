@@ -1,4 +1,4 @@
-"""Entrypoint for azure-vm-tui."""
+"""Entrypoint for az-vm-tui."""
 
 from __future__ import annotations
 
@@ -24,20 +24,20 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         Parsed namespace with a config attribute.
     """
     parser = argparse.ArgumentParser(
-        prog="azure-vm-tui",
+        prog="az-vm-tui",
         description="Fast TUI for managing Azure VMs",
     )
     parser.add_argument(
         "--config",
         metavar="PATH",
         default=None,
-        help="Path to config file (default: search .azure-vm-tui in $PWD then ~/)",
+        help="Path to config file (default: search .az-vm-tui in $PWD then ~/)",
     )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Run the azure-vm-tui application.
+    """Run the az-vm-tui application.
 
     Args:
         argv: CLI arguments, defaults to sys.argv[1:].

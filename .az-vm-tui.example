@@ -1,5 +1,5 @@
 # Azure VM TUI configuration
-# Place as .azure-vm-tui in your working directory or home directory
+# Place as .az-vm-tui in your working directory or home directory
 
 [azure]
 # subscription_id = ""      # empty = use az default subscription

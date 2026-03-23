@@ -37,7 +37,7 @@ uv run ty check src/
 - **textual** (TUI framework), **paramiko** (SSH for stats)
 - **az CLI** (VM operations, always `--output json`)
 - **fzf** (optional fuzzy search, subprocess)
-- Config: `.azure-vm-tui` (TOML, parsed with stdlib `tomllib`)
+- Config: `.az-vm-tui` (TOML, parsed with stdlib `tomllib`)
 
 ## Architecture
 
@@ -52,7 +52,7 @@ app.py (Textual App)
   │
   ├── az.py         → subprocess: `az` CLI (JSON output only)
   ├── stats.py      → paramiko SSH session (background thread, never blocks UI)
-  ├── config.py     → tomllib: loads .azure-vm-tui from $PWD then ~/
+  ├── config.py     → tomllib: loads .az-vm-tui from $PWD then ~/
   └── fzf.py        → subprocess: `fzf` (graceful fallback if missing)
 ```
 
@@ -60,7 +60,7 @@ app.py (Textual App)
 
 - **az.py**: All `az` calls go through this module. Always use `--output json`. Raise `AzError` on failure — callers never inspect raw stderr.
 - **stats.py**: Only active when `show_stats = true`. Runs in a background thread. Collects CPU/RAM/disk/GPU via a single SSH session per cycle using `---SEP---` delimiters. Returns `VMStats` dataclass. GPU stats via `nvidia-smi` with `NO_GPU` fallback.
-- **config.py**: TOML config searched in order: `$PWD/.azure-vm-tui`, `~/.azure-vm-tui`. First found wins. All keys optional with sensible defaults.
+- **config.py**: TOML config searched in order: `$PWD/.az-vm-tui`, `~/.az-vm-tui`. First found wins. All keys optional with sensible defaults.
 - **fzf.py**: Pipes VM names to fzf stdin, returns selection or `None`. Falls back gracefully if fzf not on PATH.
 - **Screens**: No direct subprocess or SSH calls — always go through service modules.
 
@@ -69,7 +69,7 @@ app.py (Textual App)
 - Missing `az` CLI → actionable message + exit 1
 - Not logged in → detect `az account show` failure → prompt `az login`
 - SSH failures → display in stats panel, never crash TUI
-- VM operation failures → inline status bar error + log to `~/.azure-vm-tui.log`
+- VM operation failures → inline status bar error + log to `~/.az-vm-tui.log`
 
 ## Testing
 
