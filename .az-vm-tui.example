@@ -14,3 +14,7 @@
 # user    = "azureuser"
 # key     = "~/.ssh/id_rsa"
 # timeout = 8               # seconds before stat fetch times out
+
+[auto_shutdown]
+# default_time     = "1900"     # default shutdown time (HHMM, 24h format)
+# default_timezone = "UTC"      # IANA timezone (e.g. UTC, US/Eastern)

@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
+
+logger = logging.getLogger("azure_vm_tui")
 
 _AZ_TIMEOUT_SECONDS = 60
 
@@ -39,6 +43,32 @@ class VMInfo:
     vm_size: str
     os_type: str
     tags: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class AutoShutdownInfo:
+    """Represents the auto-shutdown schedule for a VM."""
+
+    enabled: bool
+    time: str
+    timezone: str
+    email: str | None = None
+
+
+_SHUTDOWN_TIME_RE = re.compile(r"^([01]\d|2[0-3])([0-5]\d)$")
+
+
+def validate_shutdown_time(time: str) -> None:
+    """Validate that a shutdown time string is in HHMM format (00-23, 00-59).
+
+    Args:
+        time: Time string to validate, e.g. "1900".
+
+    Raises:
+        ValueError: If the time string is not valid HHMM.
+    """
+    if not _SHUTDOWN_TIME_RE.match(time):
+        raise ValueError(f"Invalid shutdown time {time!r} — expected HHMM (e.g. 1900)")
 
 
 def _run_az(args: list[str]) -> str:
@@ -220,3 +250,107 @@ def get_vm_ip(name: str, resource_group: str) -> str | None:
                 return str(ip)
 
     return None
+
+
+def get_auto_shutdown(name: str, resource_group: str) -> AutoShutdownInfo | None:
+    """Return the auto-shutdown schedule for a VM, or None if not configured.
+
+    Queries the DevTest Labs schedule resource directly, which is the
+    underlying resource that ``az vm auto-shutdown`` manages.
+
+    Args:
+        name: VM name.
+        resource_group: Resource group containing the VM.
+
+    Returns:
+        AutoShutdownInfo if a schedule exists, None if no schedule is found.
+    """
+    schedule_name = f"shutdown-computevm-{name}"
+    try:
+        raw = _run_az([
+            "resource", "show",
+            "--resource-group", resource_group,
+            "--resource-type", "Microsoft.DevTestLab/schedules",
+            "--name", schedule_name,
+        ])
+    except AzError as exc:
+        logger.debug("Auto-shutdown query failed for %s: %s", name, exc.stderr)
+        return None
+    data: dict = json.loads(raw)
+    props: dict = data.get("properties", {})
+    status = props.get("status", "Disabled")
+    recurrence = props.get("dailyRecurrence", {})
+    notification = props.get("notificationSettings", {})
+    email = notification.get("emailRecipient") or None
+    return AutoShutdownInfo(
+        enabled=status == "Enabled",
+        time=recurrence.get("time", ""),
+        timezone=props.get("timeZoneId", ""),
+        email=email,
+    )
+
+
+def enable_auto_shutdown(
+    name: str,
+    resource_group: str,
+    time: str,
+    timezone: str = "UTC",
+    email: str | None = None,
+) -> None:
+    """Enable or update auto-shutdown for a VM.
+
+    Args:
+        name: VM name.
+        resource_group: Resource group containing the VM.
+        time: Daily shutdown time in HHMM format (e.g. "1900").
+        timezone: IANA timezone string (e.g. "UTC", "US/Eastern").
+        email: Optional notification email address.
+
+    Raises:
+        ValueError: If the time format is invalid.
+        AzError: If the CLI call fails.
+    """
+    validate_shutdown_time(time)
+    args = [
+        "vm", "auto-shutdown",
+        "--name", name,
+        "--resource-group", resource_group,
+        "--time", time,
+    ]
+    if timezone:
+        args += ["--timezone", timezone]
+    if email:
+        args += ["--email", email]
+    _run_az(args)
+
+
+def _get_subscription_id() -> str:
+    """Return the ID of the currently active Azure subscription.
+
+    Returns:
+        The subscription UUID string.
+
+    Raises:
+        AzError: If the CLI call fails.
+    """
+    raw = _run_az(["account", "show"])
+    data: dict = json.loads(raw)
+    return str(data["id"])
+
+
+def disable_auto_shutdown(name: str, resource_group: str) -> None:
+    """Disable auto-shutdown for a VM by setting the schedule status to Disabled.
+
+    Args:
+        name: VM name.
+        resource_group: Resource group containing the VM.
+
+    Raises:
+        AzError: If the CLI call fails.
+    """
+    sub_id = _get_subscription_id()
+    resource_id = (
+        f"/subscriptions/{sub_id}/resourceGroups/{resource_group}"
+        f"/providers/microsoft.devtestlab/schedules/shutdown-computevm-{name}"
+    )
+    _run_az(["resource", "update", "--ids", resource_id, "--set", "properties.status=Disabled"])

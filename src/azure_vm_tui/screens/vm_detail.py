@@ -15,8 +15,9 @@ from textual.screen import Screen
 from textual.widgets import Footer, Header, Static
 
 from azure_vm_tui import az
-from azure_vm_tui.az import AzError, VMInfo
+from azure_vm_tui.az import AutoShutdownInfo, AzError, VMInfo
 from azure_vm_tui.config import AppConfig, validate_ssh_key_path
+from azure_vm_tui.screens.auto_shutdown_dialog import AutoShutdownDialog
 from azure_vm_tui.stats import StatsError, VMStats, collect_stats
 
 logger = logging.getLogger("azure_vm_tui")
@@ -31,6 +32,8 @@ class VMDetailScreen(Screen):
     """
 
     BINDINGS: ClassVar = [
+        Binding("a", "auto_shutdown", "AutoOff", show=True),
+        Binding("A", "disable_auto_shutdown", "DisableAutoOff", show=True),
         Binding("b", "go_back", "Back", show=True),
         Binding("escape", "go_back", "Back", show=False),
     ]
@@ -40,12 +43,14 @@ class VMDetailScreen(Screen):
         self._vm = vm
         self._config = config
         self._stats_running = False
+        self._auto_shutdown: AutoShutdownInfo | None = None
 
     def compose(self) -> ComposeResult:
         """Build the detail screen layout."""
         yield Header()
         yield Vertical(
             Static(self._build_info_text(), id="vm-info"),
+            Static("", id="auto-shutdown-info"),
             id="info-panel",
         )
         if self._config.ui.show_stats:
@@ -81,8 +86,9 @@ class VMDetailScreen(Screen):
         return "\n".join(lines)
 
     def on_mount(self) -> None:
-        """Start stats collection if enabled and load IP address."""
+        """Start stats collection if enabled, load IP and auto-shutdown info."""
         self._load_ip()
+        self._load_auto_shutdown()
         if self._config.ui.show_stats:
             self._stats_running = True
             self._collect_stats_loop()
@@ -183,6 +189,107 @@ class VMDetailScreen(Screen):
         """
         content = self.query_one("#stats-content", Static)
         content.update(f"[red]{message}[/red]")
+
+    @work(thread=True)
+    def _load_auto_shutdown(self) -> None:
+        """Load auto-shutdown info in a background thread."""
+        try:
+            info = az.get_auto_shutdown(self._vm.name, self._vm.resource_group)
+            self.app.call_from_thread(self._update_auto_shutdown_display, info)
+        except AzError as exc:
+            logger.error("Failed to get auto-shutdown for %s: %s", self._vm.name, exc.stderr)
+            self.app.call_from_thread(
+                self._update_auto_shutdown_display_text,
+                "[b]Auto-Shutdown:[/b] [red]error[/red]",
+            )
+
+    def _update_auto_shutdown_display(self, info: AutoShutdownInfo | None) -> None:
+        """Update auto-shutdown display on the main thread.
+
+        Args:
+            info: Auto-shutdown info, or None if not configured.
+        """
+        self._auto_shutdown = info
+        if info is None:
+            text = "[b]Auto-Shutdown:[/b] [dim]not configured[/dim]"
+        elif info.enabled:
+            text = f"[b]Auto-Shutdown:[/b] [green]{info.time[:2]}:{info.time[2:]} {info.timezone}[/green]"
+        else:
+            text = f"[b]Auto-Shutdown:[/b] [dim]disabled (was {info.time[:2]}:{info.time[2:]} {info.timezone})[/dim]"
+        self._update_auto_shutdown_display_text(text)
+
+    def _update_auto_shutdown_display_text(self, text: str) -> None:
+        """Set the auto-shutdown Static widget text.
+
+        Args:
+            text: Rich markup string to display.
+        """
+        widget = self.query_one("#auto-shutdown-info", Static)
+        widget.update(text)
+
+    def action_auto_shutdown(self) -> None:
+        """Open the auto-shutdown configuration dialog."""
+        cfg = self._config.auto_shutdown
+        default_time = cfg.default_time
+        default_tz = cfg.default_timezone
+        if self._auto_shutdown is not None and self._auto_shutdown.time:
+            default_time = self._auto_shutdown.time
+            default_tz = self._auto_shutdown.timezone
+
+        def on_result(result: tuple[str, str] | None) -> None:
+            if result is not None:
+                shutdown_time, timezone = result
+                self._do_enable_auto_shutdown(shutdown_time, timezone)
+
+        self.app.push_screen(AutoShutdownDialog(default_time, default_tz), callback=on_result)
+
+    @work(thread=True)
+    def _do_enable_auto_shutdown(self, shutdown_time: str, timezone: str) -> None:
+        """Enable auto-shutdown in a background thread.
+
+        Args:
+            shutdown_time: HHMM time string.
+            timezone: IANA timezone string.
+        """
+        self.app.call_from_thread(self.notify, f"Enabling auto-shutdown at {shutdown_time} {timezone}...")
+        try:
+            az.enable_auto_shutdown(self._vm.name, self._vm.resource_group, shutdown_time, timezone)
+            self.app.call_from_thread(self._load_auto_shutdown)
+        except AzError as exc:
+            logger.error("Failed to enable auto-shutdown for %s: %s", self._vm.name, exc.stderr)
+            self.app.call_from_thread(
+                self.notify, f"Failed to enable auto-shutdown: {exc.display_message}", severity="error",
+            )
+
+    def action_disable_auto_shutdown(self) -> None:
+        """Disable auto-shutdown after confirmation."""
+        if self._auto_shutdown is None or not self._auto_shutdown.enabled:
+            self.notify("Auto-shutdown is not enabled", severity="warning")
+            return
+
+        from azure_vm_tui.screens.vm_list import ConfirmScreen
+
+        def on_confirm(confirmed: bool) -> None:
+            if confirmed:
+                self._do_disable_auto_shutdown()
+
+        self.app.push_screen(
+            ConfirmScreen(f"Disable auto-shutdown for {self._vm.name}?"),
+            callback=on_confirm,
+        )
+
+    @work(thread=True)
+    def _do_disable_auto_shutdown(self) -> None:
+        """Disable auto-shutdown in a background thread."""
+        self.app.call_from_thread(self.notify, f"Disabling auto-shutdown for {self._vm.name}...")
+        try:
+            az.disable_auto_shutdown(self._vm.name, self._vm.resource_group)
+            self.app.call_from_thread(self._load_auto_shutdown)
+        except AzError as exc:
+            logger.error("Failed to disable auto-shutdown for %s: %s", self._vm.name, exc.stderr)
+            self.app.call_from_thread(
+                self.notify, f"Failed to disable auto-shutdown: {exc.display_message}", severity="error",
+            )
 
     def action_go_back(self) -> None:
         """Return to the VM list screen."""

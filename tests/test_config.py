@@ -7,6 +7,7 @@ import pytest
 
 from azure_vm_tui.config import (
     AppConfig,
+    AutoShutdownConfig,
     AzureConfig,
     SSHConfig,
     UIConfig,
@@ -34,6 +35,7 @@ class TestDefaultConfig:
         assert config.azure == AzureConfig()
         assert config.ui == UIConfig()
         assert config.ssh == SSHConfig()
+        assert config.auto_shutdown == AutoShutdownConfig()
 
     def test_default_values(self) -> None:
         """Default values match the documented specification."""
@@ -47,6 +49,8 @@ class TestDefaultConfig:
         assert config.ssh.user == "azureuser"
         assert config.ssh.key == "~/.ssh/id_rsa"
         assert config.ssh.timeout == 8
+        assert config.auto_shutdown.default_time == "1900"
+        assert config.auto_shutdown.default_timezone == "UTC"
 
 
 class TestPartialConfig:
@@ -229,3 +233,49 @@ class TestImmutability:
 
         with pytest.raises(Exception):  # noqa: B017
             ssh.user = "mutated"  # type: ignore[misc]
+
+    def test_auto_shutdown_config_is_frozen(self) -> None:
+        """AutoShutdownConfig instances are immutable."""
+        cfg = AutoShutdownConfig()
+
+        with pytest.raises(Exception):  # noqa: B017
+            cfg.default_time = "2200"  # type: ignore[misc]
+
+
+class TestAutoShutdownConfig:
+    def test_defaults_when_section_missing(self, tmp_path: Path) -> None:
+        """Missing [auto_shutdown] section returns defaults."""
+        config_file = write_toml(tmp_path, "[azure]\n")
+        config = load_config(str(config_file))
+
+        assert config.auto_shutdown.default_time == "1900"
+        assert config.auto_shutdown.default_timezone == "UTC"
+
+    def test_custom_time_and_timezone(self, tmp_path: Path) -> None:
+        """Custom time and timezone are loaded correctly."""
+        config_file = write_toml(
+            tmp_path,
+            '[auto_shutdown]\ndefault_time = "2200"\ndefault_timezone = "US/Eastern"\n',
+        )
+        config = load_config(str(config_file))
+
+        assert config.auto_shutdown.default_time == "2200"
+        assert config.auto_shutdown.default_timezone == "US/Eastern"
+
+    def test_invalid_time_raises(self, tmp_path: Path) -> None:
+        """Invalid default_time raises ValueError during config load."""
+        config_file = write_toml(tmp_path, '[auto_shutdown]\ndefault_time = "2500"\n')
+
+        with pytest.raises(ValueError, match="Invalid shutdown time"):
+            load_config(str(config_file))
+
+    def test_partial_section_uses_defaults(self, tmp_path: Path) -> None:
+        """Partial [auto_shutdown] section fills missing keys with defaults."""
+        config_file = write_toml(
+            tmp_path,
+            '[auto_shutdown]\ndefault_timezone = "Europe/London"\n',
+        )
+        config = load_config(str(config_file))
+
+        assert config.auto_shutdown.default_time == "1900"
+        assert config.auto_shutdown.default_timezone == "Europe/London"

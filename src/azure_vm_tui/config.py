@@ -40,12 +40,21 @@ class SSHConfig:
 
 
 @dataclass(frozen=True)
+class AutoShutdownConfig:
+    """Default settings for VM auto-shutdown."""
+
+    default_time: str = "1900"
+    default_timezone: str = "UTC"
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """Top-level application configuration."""
 
     azure: AzureConfig = field(default_factory=AzureConfig)
     ui: UIConfig = field(default_factory=UIConfig)
     ssh: SSHConfig = field(default_factory=SSHConfig)
+    auto_shutdown: AutoShutdownConfig = field(default_factory=AutoShutdownConfig)
 
 
 def _resolve_config_path() -> Path | None:
@@ -139,6 +148,29 @@ def _parse_ssh(raw: dict) -> SSHConfig:
     )
 
 
+def _parse_auto_shutdown(raw: dict) -> AutoShutdownConfig:
+    """Build AutoShutdownConfig from a raw TOML section dict.
+
+    Args:
+        raw: Dict from the [auto_shutdown] TOML section (may be empty).
+
+    Returns:
+        AutoShutdownConfig with values from raw, defaults for missing keys.
+
+    Raises:
+        ValueError: If default_time is not valid HHMM format.
+    """
+    from azure_vm_tui.az import validate_shutdown_time
+
+    defaults = AutoShutdownConfig()
+    default_time = raw.get("default_time", defaults.default_time)
+    validate_shutdown_time(default_time)
+    return AutoShutdownConfig(
+        default_time=default_time,
+        default_timezone=raw.get("default_timezone", defaults.default_timezone),
+    )
+
+
 def _parse_toml(data: dict) -> AppConfig:
     """Build AppConfig from parsed TOML data.
 
@@ -152,6 +184,7 @@ def _parse_toml(data: dict) -> AppConfig:
         azure=_parse_azure(data.get("azure", {})),
         ui=_parse_ui(data.get("ui", {})),
         ssh=_parse_ssh(data.get("ssh", {})),
+        auto_shutdown=_parse_auto_shutdown(data.get("auto_shutdown", {})),
     )
 
 
