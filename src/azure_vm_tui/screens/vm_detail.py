@@ -44,6 +44,7 @@ class VMDetailScreen(Screen):
         self._config = config
         self._stats_running = False
         self._auto_shutdown: AutoShutdownInfo | None = None
+        self._cached_ip: str | None = None
 
     def compose(self) -> ComposeResult:
         """Build the detail screen layout."""
@@ -98,6 +99,8 @@ class VMDetailScreen(Screen):
         """Load the public IP address in a background thread."""
         try:
             ip = az.get_vm_ip(self._vm.name, self._vm.resource_group)
+            if ip is not None:
+                self._cached_ip = ip
             ip_display = ip or "none"
         except AzError as exc:
             logger.error("Failed to get IP for %s: %s", self._vm.name, exc.stderr)
@@ -123,17 +126,16 @@ class VMDetailScreen(Screen):
     def _fetch_and_update_stats(self) -> None:
         """Fetch stats once and push result to the UI.
 
-        Separated from the loop so each fetch is independently bounded.
+        Uses the cached IP from ``_load_ip()`` to avoid a CLI call per cycle.
         """
+        if self._cached_ip is None:
+            self.app.call_from_thread(self._update_stats_error, "No public IP — cannot collect stats")
+            return
         try:
-            ip = az.get_vm_ip(self._vm.name, self._vm.resource_group)
-            if ip is None:
-                self.app.call_from_thread(self._update_stats_error, "No public IP — cannot collect stats")
-                return
             validate_ssh_key_path(self._config.ssh.key)
             key_path = str(Path(self._config.ssh.key).expanduser())
             vm_stats = collect_stats(
-                host=ip,
+                host=self._cached_ip,
                 user=self._config.ssh.user,
                 key_path=key_path,
                 timeout=self._config.ssh.timeout,
@@ -143,9 +145,6 @@ class VMDetailScreen(Screen):
             self.app.call_from_thread(self._update_stats_error, str(exc))
         except StatsError as exc:
             self.app.call_from_thread(self._update_stats_error, exc.reason)
-        except AzError as exc:
-            logger.error("Azure error fetching stats for %s: %s", self._vm.name, exc.stderr)
-            self.app.call_from_thread(self._update_stats_error, f"Azure error: {exc.display_message}")
 
     def _update_stats_display(self, stats: VMStats) -> None:
         """Update the stats panel with fresh data (main thread).
@@ -212,10 +211,12 @@ class VMDetailScreen(Screen):
         self._auto_shutdown = info
         if info is None:
             text = "[b]Auto-Shutdown:[/b] [dim]not configured[/dim]"
-        elif info.enabled:
-            text = f"[b]Auto-Shutdown:[/b] [green]{info.time[:2]}:{info.time[2:]} {info.timezone}[/green]"
         else:
-            text = f"[b]Auto-Shutdown:[/b] [dim]disabled (was {info.time[:2]}:{info.time[2:]} {info.timezone})[/dim]"
+            time_str = f"{info.time[:2]}:{info.time[2:]}" if len(info.time) == 4 else info.time
+            if info.enabled:
+                text = f"[b]Auto-Shutdown:[/b] [green]{time_str} {info.timezone}[/green]"
+            else:
+                text = f"[b]Auto-Shutdown:[/b] [dim]disabled (was {time_str} {info.timezone})[/dim]"
         self._update_auto_shutdown_display_text(text)
 
     def _update_auto_shutdown_display_text(self, text: str) -> None:
@@ -249,7 +250,7 @@ class VMDetailScreen(Screen):
 
         Args:
             shutdown_time: HHMM time string.
-            timezone: IANA timezone string.
+            timezone: Windows timezone name (e.g. "UTC", "Eastern Standard Time").
         """
         self.app.call_from_thread(self.notify, f"Enabling auto-shutdown at {shutdown_time} {timezone}...")
         try:
@@ -257,9 +258,7 @@ class VMDetailScreen(Screen):
             self.app.call_from_thread(self._load_auto_shutdown)
         except AzError as exc:
             logger.error("Failed to enable auto-shutdown for %s: %s", self._vm.name, exc.stderr)
-            self.app.call_from_thread(
-                self.notify, f"Failed to enable auto-shutdown: {exc.display_message}", severity="error",
-            )
+            self.app.call_from_thread(self._show_auto_shutdown_error, exc.stderr)
 
     def action_disable_auto_shutdown(self) -> None:
         """Disable auto-shutdown after confirmation."""
@@ -287,9 +286,20 @@ class VMDetailScreen(Screen):
             self.app.call_from_thread(self._load_auto_shutdown)
         except AzError as exc:
             logger.error("Failed to disable auto-shutdown for %s: %s", self._vm.name, exc.stderr)
-            self.app.call_from_thread(
-                self.notify, f"Failed to disable auto-shutdown: {exc.display_message}", severity="error",
-            )
+            self.app.call_from_thread(self._show_auto_shutdown_error, exc.stderr)
+
+    def _show_auto_shutdown_error(self, stderr: str) -> None:
+        """Show auto-shutdown error in the info panel (main thread).
+
+        Args:
+            stderr: Raw stderr from the az CLI call.
+        """
+        from rich.markup import escape
+
+        first_line = escape(stderr.strip().split("\n")[0][:120])
+        self._update_auto_shutdown_display_text(
+            f"[b]Auto-Shutdown:[/b] [red]{first_line}[/red]"
+        )
 
     def action_go_back(self) -> None:
         """Return to the VM list screen."""

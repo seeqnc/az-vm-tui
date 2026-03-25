@@ -8,10 +8,12 @@ from unittest.mock import patch
 
 import pytest
 
+import azure_vm_tui.az
 from azure_vm_tui.az import (
     AutoShutdownInfo,
     AzError,
     VMInfo,
+    _get_subscription_id,
     check_az_cli,
     check_login,
     disable_auto_shutdown,
@@ -22,8 +24,15 @@ from azure_vm_tui.az import (
     list_vms,
     start_vm,
     stop_vm,
-    validate_shutdown_time,
 )
+from azure_vm_tui.validators import validate_shutdown_time
+
+
+@pytest.fixture(autouse=True)
+def _reset_subscription_cache() -> None:
+    """Reset the module-level subscription ID cache between tests."""
+    azure_vm_tui.az._subscription_id_cache = None
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -216,6 +225,24 @@ def test_list_vms_normalizes_power_state() -> None:
     # Raw values like "VM running" must not appear
     for state in states:
         assert not state.startswith("VM "), f"Unnormalised state: {state!r}"
+
+
+def test_list_vms_without_details() -> None:
+    """Omits --show-details when show_details=False."""
+    with patch("subprocess.run", return_value=_ok(LIST_VMS_JSON)) as mock_run:
+        list_vms(show_details=False)
+
+    called_args = mock_run.call_args[0][0]
+    assert "--show-details" not in called_args
+
+
+def test_list_vms_with_details_by_default() -> None:
+    """Includes --show-details by default."""
+    with patch("subprocess.run", return_value=_ok(LIST_VMS_JSON)) as mock_run:
+        list_vms()
+
+    called_args = mock_run.call_args[0][0]
+    assert "--show-details" in called_args
 
 
 # ---------------------------------------------------------------------------
@@ -479,38 +506,46 @@ class TestGetAutoShutdown:
 
 
 class TestEnableAutoShutdown:
-    def test_passes_correct_args(self) -> None:
-        """Builds correct az vm auto-shutdown command with time and timezone."""
-        with patch("subprocess.run", return_value=_ok("{}")) as mock_run:
+    def test_creates_schedule_resource(self) -> None:
+        """Creates a DevTest Labs schedule resource with correct properties."""
+        responses = [
+            _ok(ACCOUNT_JSON),  # _get_subscription_id
+            _ok("{}"),          # az resource create
+        ]
+        with patch("subprocess.run", side_effect=responses) as mock_run:
             enable_auto_shutdown(name="vm-01", resource_group="rg", time="1900", timezone="UTC")
 
-        called_args = mock_run.call_args[0][0]
-        assert "vm" in called_args
-        assert "auto-shutdown" in called_args
-        assert "--time" in called_args
-        assert "1900" in called_args
-        assert "--timezone" in called_args
-        assert "UTC" in called_args
+        create_args = mock_run.call_args_list[1][0][0]
+        assert "resource" in create_args
+        assert "create" in create_args
+        assert "--resource-type" in create_args
+        assert "Microsoft.DevTestLab/schedules" in create_args
+        assert "--name" in create_args
+        assert "shutdown-computevm-vm-01" in create_args
+        assert "--properties" in create_args
 
-    def test_includes_email_when_provided(self) -> None:
-        """Appends --email flag when email is provided."""
-        with patch("subprocess.run", return_value=_ok("{}")) as mock_run:
+        props_idx = create_args.index("--properties")
+        props = json.loads(create_args[props_idx + 1])
+        assert props["status"] == "Enabled"
+        assert props["dailyRecurrence"]["time"] == "1900"
+        assert props["timeZoneId"] == "UTC"
+        assert props["notificationSettings"]["status"] == "Disabled"
+
+    def test_includes_email_in_properties(self) -> None:
+        """Includes email notification in schedule properties."""
+        responses = [_ok(ACCOUNT_JSON), _ok("{}")]
+        with patch("subprocess.run", side_effect=responses) as mock_run:
             enable_auto_shutdown(
                 name="vm-01", resource_group="rg", time="2200",
-                timezone="US/Eastern", email="admin@example.com",
+                timezone="W. Europe Standard Time", email="admin@example.com",
             )
 
-        called_args = mock_run.call_args[0][0]
-        assert "--email" in called_args
-        assert "admin@example.com" in called_args
-
-    def test_omits_email_when_none(self) -> None:
-        """Does not include --email when email is None."""
-        with patch("subprocess.run", return_value=_ok("{}")) as mock_run:
-            enable_auto_shutdown(name="vm-01", resource_group="rg", time="1900")
-
-        called_args = mock_run.call_args[0][0]
-        assert "--email" not in called_args
+        create_args = mock_run.call_args_list[1][0][0]
+        props_idx = create_args.index("--properties")
+        props = json.loads(create_args[props_idx + 1])
+        assert props["timeZoneId"] == "W. Europe Standard Time"
+        assert props["notificationSettings"]["status"] == "Enabled"
+        assert props["notificationSettings"]["emailRecipient"] == "admin@example.com"
 
     def test_rejects_invalid_time(self) -> None:
         """Raises ValueError before calling az when time is invalid."""
@@ -519,8 +554,9 @@ class TestEnableAutoShutdown:
 
     def test_raises_az_error_on_failure(self) -> None:
         """Raises AzError when the CLI call fails."""
+        responses = [_ok(ACCOUNT_JSON), _fail("Some Azure error")]
         with (
-            patch("subprocess.run", return_value=_fail("Some Azure error")),
+            patch("subprocess.run", side_effect=responses),
             pytest.raises(AzError),
         ):
             enable_auto_shutdown(name="vm-01", resource_group="rg", time="1900")
@@ -532,43 +568,26 @@ class TestEnableAutoShutdown:
 
 
 class TestDisableAutoShutdown:
-    def test_constructs_resource_id_and_disables(self) -> None:
-        """Builds correct resource ID and calls az resource update."""
-        responses = [
-            _ok(ACCOUNT_JSON),  # _get_subscription_id -> account show
-            _ok("{}"),          # az resource update
-        ]
-        with patch("subprocess.run", side_effect=responses) as mock_run:
+    def test_uses_resource_update_with_correct_args(self) -> None:
+        """Calls az resource update with resource-type and name."""
+        with patch("subprocess.run", return_value=_ok("{}")) as mock_run:
             disable_auto_shutdown(name="prod-web-01", resource_group="prod-rg")
 
-        update_args = mock_run.call_args_list[1][0][0]
-        assert "resource" in update_args
-        assert "update" in update_args
-        assert "--ids" in update_args
-
-        ids_idx = update_args.index("--ids")
-        resource_id = update_args[ids_idx + 1]
-        assert "abc-123" in resource_id  # subscription id from ACCOUNT_JSON
-        assert "prod-rg" in resource_id
-        assert "shutdown-computevm-prod-web-01" in resource_id
-        assert "properties.status=Disabled" in update_args
-
-    def test_raises_on_account_show_failure(self) -> None:
-        """Raises AzError if subscription lookup fails."""
-        with (
-            patch("subprocess.run", return_value=_fail("Not logged in")),
-            pytest.raises(AzError),
-        ):
-            disable_auto_shutdown(name="vm-01", resource_group="rg")
+        called_args = mock_run.call_args[0][0]
+        assert "resource" in called_args
+        assert "update" in called_args
+        assert "--resource-group" in called_args
+        assert "prod-rg" in called_args
+        assert "--resource-type" in called_args
+        assert "Microsoft.DevTestLab/schedules" in called_args
+        assert "--name" in called_args
+        assert "shutdown-computevm-prod-web-01" in called_args
+        assert "properties.status=Disabled" in called_args
 
     def test_raises_on_resource_update_failure(self) -> None:
         """Raises AzError if the resource update call fails."""
-        responses = [
-            _ok(ACCOUNT_JSON),
-            _fail("ResourceNotFound: schedule not found"),
-        ]
         with (
-            patch("subprocess.run", side_effect=responses),
+            patch("subprocess.run", return_value=_fail("ResourceNotFound: schedule not found")),
             pytest.raises(AzError),
         ):
             disable_auto_shutdown(name="vm-01", resource_group="rg")
@@ -584,3 +603,33 @@ def test_auto_shutdown_info_is_frozen() -> None:
     info = AutoShutdownInfo(enabled=True, time="1900", timezone="UTC")
     with pytest.raises(Exception):  # noqa: B017
         info.enabled = False  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# _get_subscription_id caching
+# ---------------------------------------------------------------------------
+
+
+class TestSubscriptionIdCache:
+    def test_caches_after_first_call(self) -> None:
+        """Second call returns cached value without hitting az CLI."""
+        with patch("subprocess.run", return_value=_ok(ACCOUNT_JSON)) as mock_run:
+            first = _get_subscription_id()
+            second = _get_subscription_id()
+
+        assert first == "abc-123"
+        assert second == "abc-123"
+        assert mock_run.call_count == 1
+
+    def test_enable_auto_shutdown_reuses_cached_subscription(self) -> None:
+        """Two enable calls produce only one az account show call."""
+        responses = [
+            _ok(ACCOUNT_JSON),  # first enable: account show
+            _ok("{}"),          # first enable: resource create
+            _ok("{}"),          # second enable: resource create (no account show)
+        ]
+        with patch("subprocess.run", side_effect=responses) as mock_run:
+            enable_auto_shutdown(name="vm-01", resource_group="rg", time="1900")
+            enable_auto_shutdown(name="vm-02", resource_group="rg", time="2200")
+
+        assert mock_run.call_count == 3

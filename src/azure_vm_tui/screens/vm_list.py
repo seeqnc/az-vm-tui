@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import time
 from typing import ClassVar
 
 from textual import work
@@ -23,8 +25,14 @@ STATE_INDICATORS = {
     "running": "●",
     "deallocated": "○",
     "stopped": "◌",
+    "starting": "⟳",
+    "stopping": "⟳",
+    "deallocating": "⟳",
 }
-DEFAULT_STATE_INDICATOR = "⟳"
+_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+
+_POLL_INTERVAL = 5
+_POLL_MAX_ATTEMPTS = 24
 
 
 class ConfirmScreen(Screen[bool]):
@@ -80,6 +88,8 @@ class VMListScreen(Screen):
         super().__init__()
         self.config = config
         self._vms: list[VMInfo] = []
+        self._spinner_tick = 0
+        self._spinner_timer = None
 
     def compose(self) -> ComposeResult:
         """Build the screen layout."""
@@ -94,9 +104,10 @@ class VMListScreen(Screen):
     def on_mount(self) -> None:
         """Set up the table columns and load VMs."""
         table = self.query_one("#vm-table", DataTable)
-        table.add_columns("STATE", "NAME", "LOCATION", "SIZE", "RESOURCE GROUP")
+        state_col, *_ = table.add_columns("STATE", "NAME", "LOCATION", "SIZE", "RESOURCE GROUP")
+        self._state_col_key = state_col
         self._load_subscription()
-        self._load_vms()
+        self._load_vms_two_phase()
 
     @work(thread=True)
     def _load_subscription(self) -> None:
@@ -107,19 +118,56 @@ class VMListScreen(Screen):
         except AzError:
             pass
 
-    def _load_vms(self) -> None:
-        """Trigger VM list loading with a loading indicator."""
+    def _load_vms_two_phase(self) -> None:
+        """Fast initial load without power state, then backfill details."""
         table = self.query_one("#vm-table", DataTable)
         table.loading = True
-        self._fetch_vms()
+        self._fetch_vms_fast()
 
     @work(thread=True)
-    def _fetch_vms(self) -> None:
-        """Fetch VM list from az CLI in a background thread."""
+    def _fetch_vms_fast(self) -> None:
+        """Phase 1: Fetch VM list without --show-details (fast)."""
         try:
             vms = az.list_vms(
                 resource_group=self.config.azure.resource_group,
                 subscription_id=self.config.azure.subscription_id,
+                show_details=False,
+            )
+            self.app.call_from_thread(self._populate_table, vms)
+        except AzError as exc:
+            logger.error("Failed to list VMs: %s", exc.stderr)
+            self.app.call_from_thread(self._show_error, f"Failed to list VMs: {exc.display_message}")
+        finally:
+            self.app.call_from_thread(self._set_loading, False)
+        self._fetch_vms_details()
+
+    @work(thread=True)
+    def _fetch_vms_details(self) -> None:
+        """Phase 2: Fetch full VM details with power state (slow)."""
+        try:
+            vms = az.list_vms(
+                resource_group=self.config.azure.resource_group,
+                subscription_id=self.config.azure.subscription_id,
+                show_details=True,
+            )
+            self.app.call_from_thread(self._populate_table, vms)
+        except AzError as exc:
+            logger.error("Failed to fetch VM details: %s", exc.stderr)
+
+    def _load_vms(self) -> None:
+        """Full refresh with details (used by manual refresh and after operations)."""
+        table = self.query_one("#vm-table", DataTable)
+        table.loading = True
+        self._fetch_vms_full()
+
+    @work(thread=True)
+    def _fetch_vms_full(self) -> None:
+        """Fetch VM list with full details in one pass."""
+        try:
+            vms = az.list_vms(
+                resource_group=self.config.azure.resource_group,
+                subscription_id=self.config.azure.subscription_id,
+                show_details=True,
             )
             self.app.call_from_thread(self._populate_table, vms)
         except AzError as exc:
@@ -143,14 +191,60 @@ class VMListScreen(Screen):
         Args:
             vms: List of VMs to display.
         """
-        self._vms = vms
         table = self.query_one("#vm-table", DataTable)
+        cursor_name = self._get_cursor_vm_name()
+        self._vms = vms
         table.clear()
-        for vm in self._vms:
-            indicator = STATE_INDICATORS.get(vm.power_state, DEFAULT_STATE_INDICATOR)
-            state_display = f"{indicator} {vm.power_state}"
+        restore_row = 0
+        has_pending = False
+        for idx, vm in enumerate(self._vms):
+            if vm.power_state:
+                indicator = STATE_INDICATORS.get(vm.power_state, "?")
+                state_display = f"{indicator} {vm.power_state}"
+            else:
+                has_pending = True
+                frame = _SPINNER_FRAMES[self._spinner_tick % len(_SPINNER_FRAMES)]
+                state_display = f"{frame} loading"
             table.add_row(state_display, vm.name, vm.location, vm.vm_size, vm.resource_group, key=vm.name)
+            if vm.name == cursor_name:
+                restore_row = idx
+        if restore_row and table.row_count > restore_row:
+            table.move_cursor(row=restore_row)
         self._hide_error()
+        self._toggle_spinner(has_pending)
+
+    def _toggle_spinner(self, active: bool) -> None:
+        """Start or stop the spinner timer for loading state cells.
+
+        Args:
+            active: Whether any cells need the spinner animation.
+        """
+        if active and self._spinner_timer is None:
+            self._spinner_timer = self.set_interval(0.15, self._advance_spinner)
+        elif not active and self._spinner_timer is not None:
+            self._spinner_timer.stop()
+            self._spinner_timer = None
+
+    def _advance_spinner(self) -> None:
+        """Tick the spinner and update state cells that are still loading."""
+        self._spinner_tick += 1
+        table = self.query_one("#vm-table", DataTable)
+        frame = _SPINNER_FRAMES[self._spinner_tick % len(_SPINNER_FRAMES)]
+        for vm in self._vms:
+            if not vm.power_state:
+                with contextlib.suppress(Exception):
+                    table.update_cell(vm.name, self._state_col_key, f"{frame} loading")
+
+    def _get_cursor_vm_name(self) -> str | None:
+        """Return the name of the currently highlighted VM, or None."""
+        table = self.query_one("#vm-table", DataTable)
+        if table.row_count == 0:
+            return None
+        try:
+            row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
+            return str(row_key.value)
+        except Exception:
+            return None
 
     def _show_error(self, message: str) -> None:
         """Display an error message in the status bar.
@@ -203,7 +297,7 @@ class VMListScreen(Screen):
         self.app.call_from_thread(self.notify, f"Starting {vm.name}...")
         try:
             az.start_vm(vm.name, vm.resource_group)
-            self.app.call_from_thread(self._load_vms)
+            self._poll_until_state(vm.name, vm.resource_group, "running")
         except AzError as exc:
             logger.error("Failed to start VM %s: %s", vm.name, exc.stderr)
             self.app.call_from_thread(self._show_error, f"Failed to start {vm.name}: {exc.display_message}")
@@ -240,10 +334,28 @@ class VMListScreen(Screen):
         self.app.call_from_thread(self.notify, f"Stopping {vm.name}...")
         try:
             az.stop_vm(vm.name, vm.resource_group)
-            self.app.call_from_thread(self._load_vms)
+            self._poll_until_state(vm.name, vm.resource_group, "deallocated")
         except AzError as exc:
             logger.error("Failed to stop VM %s: %s", vm.name, exc.stderr)
             self.app.call_from_thread(self._show_error, f"Failed to stop {vm.name}: {exc.display_message}")
+
+    def _poll_until_state(self, name: str, resource_group: str, target_state: str) -> None:
+        """Poll VM state until it reaches the target, refreshing the table each cycle.
+
+        Runs on a background thread. Stops after reaching the target state
+        or after ``_POLL_MAX_ATTEMPTS`` cycles.
+
+        Args:
+            name: VM name to watch.
+            resource_group: Resource group of the VM.
+            target_state: Power state to wait for (e.g. "running", "deallocated").
+        """
+        for _ in range(_POLL_MAX_ATTEMPTS):
+            self.app.call_from_thread(self._load_vms)
+            time.sleep(_POLL_INTERVAL)
+            for vm in self._vms:
+                if vm.name == name and vm.power_state == target_state:
+                    return
 
     def action_show_info(self) -> None:
         """Open detail screen for the selected VM."""

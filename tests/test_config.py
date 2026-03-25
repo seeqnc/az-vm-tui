@@ -279,3 +279,10 @@ class TestAutoShutdownConfig:
 
         assert config.auto_shutdown.default_time == "1900"
         assert config.auto_shutdown.default_timezone == "Europe/London"
+
+    def test_empty_timezone_raises(self, tmp_path: Path) -> None:
+        """Empty default_timezone raises ValueError during config load."""
+        config_file = write_toml(tmp_path, '[auto_shutdown]\ndefault_timezone = ""\n')
+
+        with pytest.raises(ValueError, match="cannot be empty"):
+            load_config(str(config_file))

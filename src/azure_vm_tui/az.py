@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
 
+from azure_vm_tui.validators import validate_shutdown_time
+
 logger = logging.getLogger("azure_vm_tui")
 
 _AZ_TIMEOUT_SECONDS = 60
+_SCHEDULE_RESOURCE_TYPE = "Microsoft.DevTestLab/schedules"
+
+
+def _schedule_name(vm_name: str) -> str:
+    return f"shutdown-computevm-{vm_name}"
 
 
 class AzError(Exception):
@@ -53,22 +59,6 @@ class AutoShutdownInfo:
     time: str
     timezone: str
     email: str | None = None
-
-
-_SHUTDOWN_TIME_RE = re.compile(r"^([01]\d|2[0-3])([0-5]\d)$")
-
-
-def validate_shutdown_time(time: str) -> None:
-    """Validate that a shutdown time string is in HHMM format (00-23, 00-59).
-
-    Args:
-        time: Time string to validate, e.g. "1900".
-
-    Raises:
-        ValueError: If the time string is not valid HHMM.
-    """
-    if not _SHUTDOWN_TIME_RE.match(time):
-        raise ValueError(f"Invalid shutdown time {time!r} — expected HHMM (e.g. 1900)")
 
 
 def _run_az(args: list[str]) -> str:
@@ -176,12 +166,18 @@ def _parse_vm(item: dict) -> VMInfo:
     )
 
 
-def list_vms(resource_group: str = "", subscription_id: str = "") -> list[VMInfo]:
+def list_vms(
+    resource_group: str = "",
+    subscription_id: str = "",
+    show_details: bool = True,
+) -> list[VMInfo]:
     """List Azure VMs, optionally filtered by resource group or subscription.
 
     Args:
         resource_group: If non-empty, restrict results to this resource group.
         subscription_id: If non-empty, target this subscription.
+        show_details: If True (default), include power state via ``--show-details``.
+            Set to False for a faster initial load without power state info.
 
     Returns:
         List of VMInfo objects, one per VM returned by the CLI.
@@ -189,7 +185,9 @@ def list_vms(resource_group: str = "", subscription_id: str = "") -> list[VMInfo
     Raises:
         AzError: If the CLI call fails.
     """
-    args = ["vm", "list", "--show-details"]
+    args = ["vm", "list"]
+    if show_details:
+        args.append("--show-details")
     if resource_group:
         args += ["--resource-group", resource_group]
     if subscription_id:
@@ -265,12 +263,12 @@ def get_auto_shutdown(name: str, resource_group: str) -> AutoShutdownInfo | None
     Returns:
         AutoShutdownInfo if a schedule exists, None if no schedule is found.
     """
-    schedule_name = f"shutdown-computevm-{name}"
+    schedule_name = _schedule_name(name)
     try:
         raw = _run_az([
             "resource", "show",
             "--resource-group", resource_group,
-            "--resource-type", "Microsoft.DevTestLab/schedules",
+            "--resource-type", _SCHEDULE_RESOURCE_TYPE,
             "--name", schedule_name,
         ])
     except AzError as exc:
@@ -299,11 +297,14 @@ def enable_auto_shutdown(
 ) -> None:
     """Enable or update auto-shutdown for a VM.
 
+    Uses the DevTest Labs schedule resource directly so that timezone
+    is supported (``az vm auto-shutdown`` only accepts UTC).
+
     Args:
         name: VM name.
         resource_group: Resource group containing the VM.
         time: Daily shutdown time in HHMM format (e.g. "1900").
-        timezone: IANA timezone string (e.g. "UTC", "US/Eastern").
+        timezone: Windows timezone name (e.g. "UTC", "W. Europe Standard Time").
         email: Optional notification email address.
 
     Raises:
@@ -311,21 +312,45 @@ def enable_auto_shutdown(
         AzError: If the CLI call fails.
     """
     validate_shutdown_time(time)
-    args = [
-        "vm", "auto-shutdown",
-        "--name", name,
-        "--resource-group", resource_group,
-        "--time", time,
-    ]
-    if timezone:
-        args += ["--timezone", timezone]
+    sub_id = _get_subscription_id()
+    vm_id = (
+        f"/subscriptions/{sub_id}/resourceGroups/{resource_group}"
+        f"/providers/Microsoft.Compute/virtualMachines/{name}"
+    )
+    schedule_name = _schedule_name(name)
+    notification_settings: dict = {"status": "Disabled"}
     if email:
-        args += ["--email", email]
-    _run_az(args)
+        notification_settings = {
+            "status": "Enabled",
+            "emailRecipient": email,
+            "notificationLocale": "en",
+            "timeInMinutes": 30,
+        }
+    properties = json.dumps({
+        "status": "Enabled",
+        "taskType": "ComputeVmShutdownTask",
+        "dailyRecurrence": {"time": time},
+        "timeZoneId": timezone,
+        "targetResourceId": vm_id,
+        "notificationSettings": notification_settings,
+    })
+    _run_az([
+        "resource", "create",
+        "--resource-group", resource_group,
+        "--resource-type", _SCHEDULE_RESOURCE_TYPE,
+        "--name", schedule_name,
+        "--properties", properties,
+    ])
+
+
+_subscription_id_cache: str | None = None
 
 
 def _get_subscription_id() -> str:
     """Return the ID of the currently active Azure subscription.
+
+    Result is cached for the lifetime of the process since the active
+    subscription does not change during a session.
 
     Returns:
         The subscription UUID string.
@@ -333,9 +358,13 @@ def _get_subscription_id() -> str:
     Raises:
         AzError: If the CLI call fails.
     """
+    global _subscription_id_cache
+    if _subscription_id_cache is not None:
+        return _subscription_id_cache
     raw = _run_az(["account", "show"])
     data: dict = json.loads(raw)
-    return str(data["id"])
+    _subscription_id_cache = str(data["id"])
+    return _subscription_id_cache
 
 
 def disable_auto_shutdown(name: str, resource_group: str) -> None:
@@ -348,9 +377,10 @@ def disable_auto_shutdown(name: str, resource_group: str) -> None:
     Raises:
         AzError: If the CLI call fails.
     """
-    sub_id = _get_subscription_id()
-    resource_id = (
-        f"/subscriptions/{sub_id}/resourceGroups/{resource_group}"
-        f"/providers/microsoft.devtestlab/schedules/shutdown-computevm-{name}"
-    )
-    _run_az(["resource", "update", "--ids", resource_id, "--set", "properties.status=Disabled"])
+    _run_az([
+        "resource", "update",
+        "--resource-group", resource_group,
+        "--resource-type", _SCHEDULE_RESOURCE_TYPE,
+        "--name", _schedule_name(name),
+        "--set", "properties.status=Disabled",
+    ])

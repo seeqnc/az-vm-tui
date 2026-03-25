@@ -9,6 +9,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from azure_vm_tui.validators import validate_shutdown_time
+
 CONFIG_FILENAME = ".az-vm-tui"
 REFRESH_INTERVAL_MIN = 5
 
@@ -160,14 +162,15 @@ def _parse_auto_shutdown(raw: dict) -> AutoShutdownConfig:
     Raises:
         ValueError: If default_time is not valid HHMM format.
     """
-    from azure_vm_tui.az import validate_shutdown_time
-
     defaults = AutoShutdownConfig()
     default_time = raw.get("default_time", defaults.default_time)
     validate_shutdown_time(default_time)
+    default_timezone = raw.get("default_timezone", defaults.default_timezone)
+    if not default_timezone.strip():
+        raise ValueError("auto_shutdown.default_timezone cannot be empty")
     return AutoShutdownConfig(
         default_time=default_time,
-        default_timezone=raw.get("default_timezone", defaults.default_timezone),
+        default_timezone=default_timezone,
     )
 
 
