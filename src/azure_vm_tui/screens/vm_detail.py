@@ -57,7 +57,7 @@ class VMDetailScreen(Screen):
         if self._config.ui.show_stats:
             yield Vertical(
                 Static("System Stats", classes="stats-label"),
-                Static("Loading stats...", id="stats-content"),
+                Static("Resolving IP...", id="stats-content"),
                 id="stats-panel",
                 classes="stats-panel",
             )
@@ -87,16 +87,13 @@ class VMDetailScreen(Screen):
         return "\n".join(lines)
 
     def on_mount(self) -> None:
-        """Start stats collection if enabled, load IP and auto-shutdown info."""
+        """Load IP, auto-shutdown info, and start stats after IP resolves."""
         self._load_ip()
         self._load_auto_shutdown()
-        if self._config.ui.show_stats:
-            self._stats_running = True
-            self._collect_stats_loop()
 
     @work(thread=True)
     def _load_ip(self) -> None:
-        """Load the public IP address in a background thread."""
+        """Load the public IP address, then start stats if enabled."""
         try:
             ip = az.get_vm_ip(self._vm.name, self._vm.resource_group)
             if ip is not None:
@@ -106,6 +103,9 @@ class VMDetailScreen(Screen):
             logger.error("Failed to get IP for %s: %s", self._vm.name, exc.stderr)
             ip_display = "error"
         self.app.call_from_thread(self._update_info, ip_display)
+        if self._cached_ip is not None and self._config.ui.show_stats:
+            self._stats_running = True
+            self.app.call_from_thread(self._collect_stats_loop)
 
     def _update_info(self, ip: str) -> None:
         """Rebuild the info panel with the resolved IP (main thread).
