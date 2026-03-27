@@ -243,7 +243,7 @@ class VMListScreen(Screen):
         try:
             row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
             return str(row_key.value)
-        except Exception:
+        except (KeyError, LookupError):
             return None
 
     def _show_error(self, message: str) -> None:
@@ -254,12 +254,12 @@ class VMListScreen(Screen):
         """
         error_bar = self.query_one("#error-bar", Static)
         error_bar.update(message)
-        error_bar.styles.display = "block"
+        error_bar.display = True
 
     def _hide_error(self) -> None:
         """Hide the error bar."""
         error_bar = self.query_one("#error-bar", Static)
-        error_bar.styles.display = "none"
+        error_bar.display = False
 
     def _get_selected_vm(self) -> VMInfo | None:
         """Get the currently selected VM from the table.
@@ -318,7 +318,7 @@ class VMListScreen(Screen):
         Args:
             vm: The VM to stop.
         """
-        def on_confirm(confirmed: bool) -> None:
+        def on_confirm(confirmed: bool | None) -> None:
             if confirmed:
                 self._do_stop_vm(vm)
 
@@ -353,7 +353,8 @@ class VMListScreen(Screen):
         for _ in range(_POLL_MAX_ATTEMPTS):
             self.app.call_from_thread(self._load_vms)
             time.sleep(_POLL_INTERVAL)
-            for vm in self._vms:
+            current_vms = self._vms
+            for vm in current_vms:
                 if vm.name == name and vm.power_state == target_state:
                     return
 

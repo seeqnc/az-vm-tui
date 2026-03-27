@@ -237,7 +237,7 @@ class VMDetailScreen(Screen):
             default_time = self._auto_shutdown.time
             default_tz = self._auto_shutdown.timezone
 
-        def on_result(result: tuple[str, str] | None) -> None:
+        def on_result(result: tuple[str, str] | None = None) -> None:
             if result is not None:
                 shutdown_time, timezone = result
                 self._do_enable_auto_shutdown(shutdown_time, timezone)
@@ -258,7 +258,7 @@ class VMDetailScreen(Screen):
             self.app.call_from_thread(self._load_auto_shutdown)
         except AzError as exc:
             logger.error("Failed to enable auto-shutdown for %s: %s", self._vm.name, exc.stderr)
-            self.app.call_from_thread(self._show_auto_shutdown_error, exc.stderr)
+            self.app.call_from_thread(self._show_auto_shutdown_error, exc.display_message)
 
     def action_disable_auto_shutdown(self) -> None:
         """Disable auto-shutdown after confirmation."""
@@ -268,7 +268,7 @@ class VMDetailScreen(Screen):
 
         from azure_vm_tui.screens.vm_list import ConfirmScreen
 
-        def on_confirm(confirmed: bool) -> None:
+        def on_confirm(confirmed: bool | None) -> None:
             if confirmed:
                 self._do_disable_auto_shutdown()
 
@@ -286,17 +286,17 @@ class VMDetailScreen(Screen):
             self.app.call_from_thread(self._load_auto_shutdown)
         except AzError as exc:
             logger.error("Failed to disable auto-shutdown for %s: %s", self._vm.name, exc.stderr)
-            self.app.call_from_thread(self._show_auto_shutdown_error, exc.stderr)
+            self.app.call_from_thread(self._show_auto_shutdown_error, exc.display_message)
 
-    def _show_auto_shutdown_error(self, stderr: str) -> None:
+    def _show_auto_shutdown_error(self, message: str) -> None:
         """Show auto-shutdown error in the info panel (main thread).
 
         Args:
-            stderr: Raw stderr from the az CLI call.
+            message: Sanitized error message safe for display.
         """
         from rich.markup import escape
 
-        first_line = escape(stderr.strip().split("\n")[0][:120])
+        first_line = escape(message.strip().split("\n")[0][:120])
         self._update_auto_shutdown_display_text(
             f"[b]Auto-Shutdown:[/b] [red]{first_line}[/red]"
         )

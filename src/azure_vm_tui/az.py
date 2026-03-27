@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import shutil
@@ -343,9 +344,7 @@ def enable_auto_shutdown(
     ])
 
 
-_subscription_id_cache: str | None = None
-
-
+@functools.lru_cache(maxsize=1)
 def _get_subscription_id() -> str:
     """Return the ID of the currently active Azure subscription.
 
@@ -358,13 +357,9 @@ def _get_subscription_id() -> str:
     Raises:
         AzError: If the CLI call fails.
     """
-    global _subscription_id_cache
-    if _subscription_id_cache is not None:
-        return _subscription_id_cache
     raw = _run_az(["account", "show"])
     data: dict = json.loads(raw)
-    _subscription_id_cache = str(data["id"])
-    return _subscription_id_cache
+    return str(data["id"])
 
 
 def disable_auto_shutdown(name: str, resource_group: str) -> None:

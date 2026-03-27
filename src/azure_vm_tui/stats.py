@@ -204,7 +204,7 @@ def collect_stats(host: str, user: str, key_path: str, timeout: int) -> VMStats:
     known_hosts = Path("~/.ssh/known_hosts").expanduser()
     if known_hosts.is_file():
         client.load_host_keys(str(known_hosts))
-    client.set_missing_host_key_policy(paramiko.WarningPolicy())
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
     try:
         client.connect(hostname=host, username=user, key_filename=key_path, timeout=timeout)
         _, stdout, _ = client.exec_command(_build_command(), timeout=timeout)

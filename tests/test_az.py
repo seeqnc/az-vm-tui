@@ -30,8 +30,8 @@ from azure_vm_tui.validators import validate_shutdown_time
 
 @pytest.fixture(autouse=True)
 def _reset_subscription_cache() -> None:
-    """Reset the module-level subscription ID cache between tests."""
-    azure_vm_tui.az._subscription_id_cache = None
+    """Reset the lru_cache on _get_subscription_id between tests."""
+    azure_vm_tui.az._get_subscription_id.cache_clear()
 
 
 # ---------------------------------------------------------------------------
