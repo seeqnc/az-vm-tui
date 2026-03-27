@@ -2,12 +2,18 @@
 
 Terminal UI for managing Azure VMs. List, start, stop, inspect — with optional live system stats over SSH.
 
+## Install
+
+```bash
+uv build
+pipx install dist/azure_vm_tui-0.1.0-py3-none-any.whl
+```
+
 ## Quickstart
 
 ```bash
 az login
-uv venv && uv pip install -e ".[dev]"
-uv run az-vm-tui
+az-vm-tui
 ```
 
 ## Keys
