@@ -231,6 +231,11 @@ def collect_stats(host: str, user: str, key_path: str, timeout: int) -> VMStats:
     except (TimeoutError, OSError) as exc:
         raise StatsError("SSH timeout") from exc
     except paramiko.SSHException as exc:
-        raise StatsError(str(exc)) from exc
+        msg = str(exc)
+        if "not found in known_hosts" in msg:
+            raise StatsError(
+                f"Unknown host key — add it with: ssh-keyscan {host} >> ~/.ssh/known_hosts"
+            ) from exc
+        raise StatsError(msg) from exc
     finally:
         client.close()
