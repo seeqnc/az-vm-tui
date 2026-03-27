@@ -10,6 +10,7 @@ from textual.app import App
 
 from azure_vm_tui.config import AppConfig
 from azure_vm_tui.screens.vm_list import VMListScreen
+from azure_vm_tui.theme import seeqnc_theme
 
 LOG_FILE = Path.home() / ".az-vm-tui.log"
 
@@ -91,5 +92,7 @@ class AzureVMApp(App):
         logger.setLevel(logging.INFO)
 
     def on_mount(self) -> None:
-        """Push the VM list screen on startup."""
+        """Register custom themes and push the VM list screen."""
+        self.register_theme(seeqnc_theme)
+        self.theme = self.config.ui.theme
         self.push_screen(VMListScreen(self.config))

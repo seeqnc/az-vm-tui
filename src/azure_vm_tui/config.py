@@ -30,6 +30,7 @@ class UIConfig:
     show_stats: bool = False
     refresh_interval: int = 5
     fuzzy_threshold: int = 5
+    theme: str = "seeqnc"
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,7 @@ def _parse_ui(raw: dict) -> UIConfig:
         show_stats=raw.get("show_stats", defaults.show_stats),
         refresh_interval=max(REFRESH_INTERVAL_MIN, refresh_interval),
         fuzzy_threshold=raw.get("fuzzy_threshold", defaults.fuzzy_threshold),
+        theme=raw.get("theme", defaults.theme),
     )
 
 
