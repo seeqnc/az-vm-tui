@@ -79,7 +79,8 @@ class VMListScreen(Screen):
         Binding("i", "show_info", "Info", show=True),
         Binding("c", "connect_ssh", "SSH", show=True),
         Binding("slash", "search", "Search", show=True),
-        Binding("r", "refresh", "Refresh", show=True),
+        Binding("r", "refresh_state", "Refresh", show=True),
+        Binding("R", "full_refresh", "Full Refresh", show=True),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
     ]
@@ -90,6 +91,7 @@ class VMListScreen(Screen):
         self._vms: list[VMInfo] = []
         self._spinner_tick = 0
         self._spinner_timer = None
+        self._refreshing = False
 
     def compose(self) -> ComposeResult:
         """Build the screen layout."""
@@ -145,12 +147,7 @@ class VMListScreen(Screen):
     def _fetch_vms_details(self) -> None:
         """Phase 2: Fetch full VM details with power state (slow)."""
         try:
-            vms = az.list_vms(
-                resource_group=self.config.azure.resource_group,
-                subscription_id=self.config.azure.subscription_id,
-                show_details=True,
-            )
-            self.app.call_from_thread(self._populate_table, vms)
+            self._fetch_and_populate()
         except AzError as exc:
             logger.error("Failed to fetch VM details: %s", exc.stderr)
 
@@ -164,17 +161,25 @@ class VMListScreen(Screen):
     def _fetch_vms_full(self) -> None:
         """Fetch VM list with full details in one pass."""
         try:
-            vms = az.list_vms(
-                resource_group=self.config.azure.resource_group,
-                subscription_id=self.config.azure.subscription_id,
-                show_details=True,
-            )
-            self.app.call_from_thread(self._populate_table, vms)
+            self._fetch_and_populate()
         except AzError as exc:
             logger.error("Failed to list VMs: %s", exc.stderr)
             self.app.call_from_thread(self._show_error, f"Failed to list VMs: {exc.display_message}")
         finally:
             self.app.call_from_thread(self._set_loading, False)
+
+    def _fetch_and_populate(self) -> None:
+        """Fetch VMs with full details and update the table.
+
+        Raises:
+            AzError: If the az CLI call fails.
+        """
+        vms = az.list_vms(
+            resource_group=self.config.azure.resource_group,
+            subscription_id=self.config.azure.subscription_id,
+            show_details=True,
+        )
+        self.app.call_from_thread(self._populate_table, vms)
 
     def _set_loading(self, value: bool) -> None:
         """Set the loading state on the table (main thread).
@@ -211,7 +216,7 @@ class VMListScreen(Screen):
         if restore_row and table.row_count > restore_row:
             table.move_cursor(row=restore_row)
         self._hide_error()
-        self._toggle_spinner(has_pending)
+        self._toggle_spinner(has_pending or self._refreshing)
 
     def _toggle_spinner(self, active: bool) -> None:
         """Start or stop the spinner timer for loading state cells.
@@ -226,14 +231,15 @@ class VMListScreen(Screen):
             self._spinner_timer = None
 
     def _advance_spinner(self) -> None:
-        """Tick the spinner and update state cells that are still loading."""
+        """Tick the spinner and update state cells that are still loading or refreshing."""
         self._spinner_tick += 1
         table = self.query_one("#vm-table", DataTable)
         frame = _SPINNER_FRAMES[self._spinner_tick % len(_SPINNER_FRAMES)]
         for vm in self._vms:
-            if not vm.power_state:
+            if not vm.power_state or self._refreshing:
                 with contextlib.suppress(Exception):
-                    table.update_cell(vm.name, self._state_col_key, f"{frame} loading")
+                    label = "loading" if not vm.power_state else "refreshing"
+                    table.update_cell(vm.name, self._state_col_key, f"{frame} {label}")
 
     def _get_cursor_vm_name(self) -> str | None:
         """Return the name of the currently highlighted VM, or None."""
@@ -342,8 +348,8 @@ class VMListScreen(Screen):
     def _poll_until_state(self, name: str, resource_group: str, target_state: str) -> None:
         """Poll VM state until it reaches the target, refreshing the table each cycle.
 
-        Runs on a background thread. Stops after reaching the target state
-        or after ``_POLL_MAX_ATTEMPTS`` cycles.
+        Runs on a background thread. Keeps the table visible (no loading overlay).
+        Stops after reaching the target state or after ``_POLL_MAX_ATTEMPTS`` cycles.
 
         Args:
             name: VM name to watch.
@@ -351,10 +357,10 @@ class VMListScreen(Screen):
             target_state: Power state to wait for (e.g. "running", "deallocated").
         """
         for _ in range(_POLL_MAX_ATTEMPTS):
-            self.app.call_from_thread(self._load_vms)
+            with contextlib.suppress(AzError):
+                self._fetch_and_populate()
             time.sleep(_POLL_INTERVAL)
-            current_vms = self._vms
-            for vm in current_vms:
+            for vm in self._vms:
                 if vm.name == name and vm.power_state == target_state:
                     return
 
@@ -405,8 +411,34 @@ class VMListScreen(Screen):
             logger.error("Failed to get IP for %s: %s", vm.name, exc.stderr)
             self.app.call_from_thread(self._show_error, f"Failed to get IP for {vm.name}: {exc.display_message}")
 
-    def action_refresh(self) -> None:
-        """Force refresh the VM list."""
+    def action_refresh_state(self) -> None:
+        """Soft refresh: update VM states in-place with animated spinner."""
+        if not self._vms:
+            self.action_full_refresh()
+            return
+        self._refreshing = True
+        table = self.query_one("#vm-table", DataTable)
+        frame = _SPINNER_FRAMES[self._spinner_tick % len(_SPINNER_FRAMES)]
+        for vm in self._vms:
+            with contextlib.suppress(Exception):
+                table.update_cell(vm.name, self._state_col_key, f"{frame} refreshing")
+        self._toggle_spinner(True)
+        self._fetch_vms_state()
+
+    @work(thread=True)
+    def _fetch_vms_state(self) -> None:
+        """Fetch VM details in background without hiding the table."""
+        try:
+            self._fetch_and_populate()
+        except AzError as exc:
+            logger.error("Failed to refresh VM state: %s", exc.stderr)
+            self.app.call_from_thread(self._show_error, f"Refresh failed: {exc.display_message}")
+        finally:
+            self._refreshing = False
+            self.app.call_from_thread(self._toggle_spinner, False)
+
+    def action_full_refresh(self) -> None:
+        """Full refresh the VM list with loading overlay."""
         self._load_vms()
 
     def action_cursor_down(self) -> None:
